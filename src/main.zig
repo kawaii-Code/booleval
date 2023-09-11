@@ -28,6 +28,7 @@ const UnaryExpressionType = enum {
 const BinaryExpressionType = enum {
     And,
     Or,
+    Xor,
     Implication,
     Equivalance,
 };
@@ -36,11 +37,12 @@ const Token = union(enum) {
     lparen,
     rparen,
     ident: u8,
-    u_not,
-    b_arrow,
-    b_eq,
-    b_and,
-    b_or,
+    bang,
+    arrow,
+    tilde,
+    ampersand,
+    pipe,
+    cap,
 };
 
 const LexError = error{
@@ -79,21 +81,22 @@ fn lex(allocator: mem.Allocator, input: []u8) !std.ArrayList(Token) {
         switch (input[position]) {
             '(' => try tokens.append(Token.lparen),
             ')' => try tokens.append(Token.rparen),
-            '!' => try tokens.append(Token.u_not),
+            '!' => try tokens.append(Token.bang),
             '-' => {
                 position += 1;
                 if (position == input.len) {
                     return LexError.TrailingCharacter;
                 }
                 if (input[position] == '>') {
-                    try tokens.append(Token.b_arrow);
+                    try tokens.append(Token.arrow);
                 } else {
                     return LexError.InvalidCharacter;
                 }
             },
-            '&' => try tokens.append(Token.b_and),
-            '|' => try tokens.append(Token.b_or),
-            '~' => try tokens.append(Token.b_eq),
+            '&' => try tokens.append(Token.ampersand),
+            '|' => try tokens.append(Token.pipe),
+            '~' => try tokens.append(Token.tilde),
+            '^' => try tokens.append(Token.cap),
             'a'...'z' => |char| try tokens.append(Token{ .ident = char }),
             ' ', '\t' => {},
             else => return LexError.InvalidCharacter,
@@ -108,12 +111,12 @@ fn parse(allocator: mem.Allocator, tokens: []Token, variables: *std.AutoHashMap(
     var trimmed_tokens = trimOuterParentheses(tokens);
 
     const position = findLeastPrecedenceNodePosition(trimmed_tokens);
-    const least_precedence_node = trimmed_tokens[position];
+    const least_precedence_token = trimmed_tokens[position];
 
     const left_tokens = trimmed_tokens[0..position];
     const right_tokens = trimmed_tokens[position + 1 ..];
 
-    switch (least_precedence_node) {
+    switch (least_precedence_token) {
         .ident => |char| {
             if (variables.get(char) == null) {
                 try variables.put(char, current_variable_id);
@@ -124,7 +127,7 @@ fn parse(allocator: mem.Allocator, tokens: []Token, variables: *std.AutoHashMap(
             node.* = ExpressionNode{ .variable = variables.get(char).? };
             return node;
         },
-        .u_not => {
+        .bang => {
             const operand = try parse(allocator, right_tokens, variables);
 
             const node = try allocator.create(ExpressionNode);
@@ -136,12 +139,13 @@ fn parse(allocator: mem.Allocator, tokens: []Token, variables: *std.AutoHashMap(
             };
             return node;
         },
-        .b_eq, .b_or, .b_and, .b_arrow => {
-            const btype = switch (least_precedence_node) {
-                .b_and => BinaryExpressionType.And,
-                .b_or => BinaryExpressionType.Or,
-                .b_eq => BinaryExpressionType.Equivalance,
-                .b_arrow => BinaryExpressionType.Implication,
+        .tilde, .pipe, .ampersand, .arrow, .cap => {
+            const @"type" = switch (least_precedence_token) {
+                .ampersand => BinaryExpressionType.And,
+                .pipe => BinaryExpressionType.Or,
+                .cap => BinaryExpressionType.Xor,
+                .arrow => BinaryExpressionType.Implication,
+                .tilde => BinaryExpressionType.Equivalance,
                 else => unreachable,
             };
 
@@ -151,7 +155,7 @@ fn parse(allocator: mem.Allocator, tokens: []Token, variables: *std.AutoHashMap(
             const node = try allocator.create(ExpressionNode);
             node.* = ExpressionNode{
                 .binary_expression = BinaryExpression{
-                    .type = btype,
+                    .type = @"type",
                     .left = left,
                     .right = right,
                 },
@@ -230,10 +234,10 @@ fn hasLessPrecedence(token: Token, maybe_compare_with: ?Token) bool {
     var compare_with = maybe_compare_with.?;
 
     switch (token) {
-        .b_arrow, .b_eq => return true,
-        .b_or => return compare_with == Token.b_or or compare_with == Token.b_and or compare_with == Token.u_not,
-        .b_and => return compare_with == Token.b_and or compare_with == Token.u_not,
-        .u_not => return compare_with == Token.u_not,
+        .arrow, .tilde => return true,
+        .pipe, .cap => return compare_with != Token.arrow or compare_with != Token.tilde,
+        .ampersand => return compare_with == Token.ampersand or compare_with == Token.bang,
+        .bang => return compare_with == Token.bang,
         else => unreachable,
     }
 }
@@ -271,6 +275,7 @@ fn evaluate(tree: *const ExpressionNode, variables: []const bool) bool {
         .binary_expression => |binary| switch (binary.type) {
             .And => return evaluate(binary.left, variables) and evaluate(binary.right, variables),
             .Or => return evaluate(binary.left, variables) or evaluate(binary.right, variables),
+            .Xor => return evaluate(binary.left, variables) != evaluate(binary.right, variables),
             .Implication => return !evaluate(binary.left, variables) or evaluate(binary.right, variables),
             .Equivalance => return evaluate(binary.left, variables) == evaluate(binary.right, variables),
         },
