@@ -1,6 +1,25 @@
 const std = @import("std");
 const io = std.io;
+const mem = std.mem;
+const heap = std.heap;
 const print = std.debug.print;
+
+const ExpressionNode = union(enum) {
+    variable: usize,
+    unary_expression: UnaryExpression,
+    binary_expression: BinaryExpression,
+};
+
+const UnaryExpression = struct {
+    type: UnaryExpressionType,
+    operand: *const ExpressionNode,
+};
+
+const BinaryExpression = struct {
+    type: BinaryExpressionType,
+    left: *const ExpressionNode,
+    right: *const ExpressionNode,
+};
 
 const UnaryExpressionType = enum {
     Negation,
@@ -11,18 +30,6 @@ const BinaryExpressionType = enum {
     Or,
     Implication,
     Equivalance,
-};
-
-const ExpressionNode = union(enum) {
-    variable_id: usize,
-    unary_expression: UnaryExpressionType,
-    binary_expression: BinaryExpressionType,
-};
-
-const ExpressionTree = struct {
-    value: ExpressionNode,
-    left: ?*const ExpressionTree,
-    right: ?*const ExpressionTree,
 };
 
 const Token = union(enum) {
@@ -36,19 +43,36 @@ const Token = union(enum) {
     b_or,
 };
 
-const TokenList = std.ArrayList(Token);
-
 const LexError = error{
-    EndOfInput,
-    UnknownSymbol,
+    TrailingCharacter,
+    InvalidCharacter,
 };
 
 const ParseError = error{
-    Test,
+    UnexpectedToken,
 };
 
-fn lex(input: []u8, allocator: std.mem.Allocator) !TokenList {
-    var tokens = TokenList.init(allocator);
+// This is clearly a crutch.
+var current_variable_id: usize = 0;
+
+pub fn main() !void {
+    var arena = heap.ArenaAllocator.init(heap.page_allocator);
+    const allocator = arena.allocator();
+    defer arena.deinit();
+
+    var variables = std.AutoHashMap(u8, usize).init(allocator);
+
+    print("> ", .{});
+    const input = try readLine(allocator);
+    const tokens = try lex(allocator, input);
+    const tree = try parse(allocator, tokens.items, &variables);
+
+    var variable_values = try allocator.alloc(bool, variables.count());
+    try printTruthTable(tree, variable_values, variables.count());
+}
+
+fn lex(allocator: mem.Allocator, input: []u8) !std.ArrayList(Token) {
+    var tokens = std.ArrayList(Token).init(allocator);
 
     var position: usize = 0;
     while (position < input.len) {
@@ -59,12 +83,12 @@ fn lex(input: []u8, allocator: std.mem.Allocator) !TokenList {
             '-' => {
                 position += 1;
                 if (position == input.len) {
-                    return LexError.EndOfInput;
+                    return LexError.TrailingCharacter;
                 }
                 if (input[position] == '>') {
                     try tokens.append(Token.b_arrow);
                 } else {
-                    return LexError.UnknownSymbol;
+                    return LexError.InvalidCharacter;
                 }
             },
             '&' => try tokens.append(Token.b_and),
@@ -72,7 +96,7 @@ fn lex(input: []u8, allocator: std.mem.Allocator) !TokenList {
             '~' => try tokens.append(Token.b_eq),
             'a'...'z' => |char| try tokens.append(Token{ .ident = char }),
             ' ', '\t' => {},
-            else => return LexError.UnknownSymbol,
+            else => return LexError.InvalidCharacter,
         }
         position += 1;
     }
@@ -80,27 +104,93 @@ fn lex(input: []u8, allocator: std.mem.Allocator) !TokenList {
     return tokens;
 }
 
-fn has_less_precedence(compare_against: ?Token, than: Token) bool {
-    if (compare_against == null) {
-        return true;
-    }
+fn parse(allocator: mem.Allocator, tokens: []Token, variables: *std.AutoHashMap(u8, usize)) !*const ExpressionNode {
+    var trimmed_tokens = trimOuterParentheses(tokens);
 
-    var initial = compare_against.?;
+    const position = findLeastPrecedenceNodePosition(trimmed_tokens);
+    const least_precedence_node = trimmed_tokens[position];
 
-    switch (than) {
-        .b_arrow, .b_eq => return initial != Token.b_arrow and initial != Token.b_eq,
-        .b_or => return initial == Token.b_and or initial == Token.u_not,
-        .b_and => return initial == Token.u_not,
-        .u_not => return false,
-        else => unreachable,
+    const left_tokens = trimmed_tokens[0..position];
+    const right_tokens = trimmed_tokens[position + 1 ..];
+
+    switch (least_precedence_node) {
+        .ident => |char| {
+            if (variables.get(char) == null) {
+                try variables.put(char, current_variable_id);
+                current_variable_id += 1;
+            }
+
+            const node = try allocator.create(ExpressionNode);
+            node.* = ExpressionNode{ .variable = variables.get(char).? };
+            return node;
+        },
+        .u_not => {
+            const operand = try parse(allocator, right_tokens, variables);
+
+            const node = try allocator.create(ExpressionNode);
+            node.* = ExpressionNode{
+                .unary_expression = UnaryExpression{
+                    .type = UnaryExpressionType.Negation,
+                    .operand = operand,
+                },
+            };
+            return node;
+        },
+        .b_eq, .b_or, .b_and, .b_arrow => {
+            const btype = switch (least_precedence_node) {
+                .b_and => BinaryExpressionType.And,
+                .b_or => BinaryExpressionType.Or,
+                .b_eq => BinaryExpressionType.Equivalance,
+                .b_arrow => BinaryExpressionType.Implication,
+                else => unreachable,
+            };
+
+            const left = try parse(allocator, left_tokens, variables);
+            const right = try parse(allocator, right_tokens, variables);
+
+            const node = try allocator.create(ExpressionNode);
+            node.* = ExpressionNode{
+                .binary_expression = BinaryExpression{
+                    .type = btype,
+                    .left = left,
+                    .right = right,
+                },
+            };
+            return node;
+        },
+        else => return ParseError.UnexpectedToken,
     }
 }
 
-fn find_last_operator(tokens: []Token) usize {
-    var result: usize = 0;
-    var result_token: ?Token = null;
+fn trimOuterParentheses(tokens: []Token) []Token {
+    if (tokens[0] != Token.lparen or tokens[tokens.len - 1] != Token.rparen) {
+        return tokens;
+    }
 
-    var depth: u32 = 0;
+    var paren_depth: i32 = 0;
+    for (tokens[1 .. tokens.len - 1]) |token| {
+        if (token == Token.lparen) {
+            paren_depth += 1;
+        } else if (token == Token.rparen) {
+            paren_depth -= 1;
+            if (paren_depth < 0) {
+                return tokens;
+            }
+        }
+    }
+
+    if (paren_depth == 0) {
+        return tokens[1 .. tokens.len - 1];
+    }
+
+    return tokens;
+}
+
+fn findLeastPrecedenceNodePosition(tokens: []Token) usize {
+    var least_precedence_pos: usize = 0;
+    var least_precedence_token: ?Token = null;
+
+    var paren_depth: u32 = 0;
     var inside_paren = false;
 
     for (tokens, 0..) |token, index| {
@@ -109,12 +199,13 @@ fn find_last_operator(tokens: []Token) usize {
         }
 
         if (token == Token.lparen) {
-            depth += 1;
+            paren_depth += 1;
             inside_paren = true;
         } else if (token == Token.rparen) {
-            depth -= 1;
-            if (depth == 0) {
+            paren_depth -= 1;
+            if (paren_depth == 0) {
                 inside_paren = false;
+                continue;
             }
         }
 
@@ -122,108 +213,83 @@ fn find_last_operator(tokens: []Token) usize {
             continue;
         }
 
-        if (has_less_precedence(result_token, token)) {
-            result_token = token;
-            result = index;
+        if (hasLessPrecedence(token, least_precedence_token)) {
+            least_precedence_token = token;
+            least_precedence_pos = index;
         }
     }
 
-    return result;
+    return least_precedence_pos;
 }
 
-var current_variable_id: usize = 0;
-
-fn parse(tokens: []Token, variables: *std.AutoHashMap(u8, usize)) !?ExpressionTree {
-    var tokens_new = tokens;
-    if (tokens_new[0] == Token.lparen and tokens_new[tokens_new.len - 1] == Token.rparen) {
-        tokens_new = tokens_new[1 .. tokens_new.len - 1];
+fn hasLessPrecedence(token: Token, maybe_compare_with: ?Token) bool {
+    if (maybe_compare_with == null) {
+        return true;
     }
 
-    const position = find_last_operator(tokens_new);
+    var compare_with = maybe_compare_with.?;
 
-    const left_tokens = tokens_new[0..position];
-    const right_tokens = tokens_new[position + 1 ..];
-
-    const current = tokens_new[position];
-
-    switch (current) {
-        .ident => |char| {
-            if (variables.get(char) == null) {
-                try variables.put(char, current_variable_id);
-                current_variable_id += 1;
-            }
-
-            return ExpressionTree{
-                .value = ExpressionNode{ .variable_id = variables.get(char).? },
-                .left = null,
-                .right = null,
-            };
-        },
-        .u_not => return ExpressionTree{
-            .value = ExpressionNode{ .unary_expression = UnaryExpressionType.Negation },
-            .left = &(try parse(left_tokens, variables)).?,
-            .right = null,
-        },
-        .b_eq, .b_or, .b_and, .b_arrow => return ExpressionTree{
-            .value = ExpressionNode{
-                .binary_expression = switch (current) {
-                    .b_and => BinaryExpressionType.And,
-                    .b_or => BinaryExpressionType.Or,
-                    .b_eq => BinaryExpressionType.Equivalance,
-                    .b_arrow => BinaryExpressionType.Implication,
-                    else => unreachable,
-                },
-            },
-            .left = &(try parse(left_tokens, variables)).?,
-            .right = &(try parse(right_tokens, variables)).?,
-        },
-        else => return ParseError.Test,
+    switch (token) {
+        .b_arrow, .b_eq => return true,
+        .b_or => return compare_with == Token.b_or or compare_with == Token.b_and or compare_with == Token.u_not,
+        .b_and => return compare_with == Token.b_and or compare_with == Token.u_not,
+        .u_not => return compare_with == Token.u_not,
+        else => unreachable,
     }
 }
 
-fn evaluate(tree: *const ExpressionTree, variables: []const bool) bool {
-    switch (tree.value) {
-        .variable_id => |id| return variables[id],
-        .unary_expression => return !evaluate(tree.left.?, variables),
-        .binary_expression => |binary_type| switch (binary_type) {
-            .And => return evaluate(tree.left.?, variables) and evaluate(tree.right.?, variables),
-            .Or => return evaluate(tree.left.?, variables) or evaluate(tree.right.?, variables),
-            .Implication => return !evaluate(tree.left.?, variables) or evaluate(tree.right.?, variables),
-            .Equivalance => return evaluate(tree.left.?, variables) == evaluate(tree.right.?, variables),
+fn printTruthTable(tree: *const ExpressionNode, variables: []bool, variable_count: usize) !void {
+    try evaluateRecursively(tree, variables, variable_count, 0);
+}
+
+fn evaluateRecursively(tree: *const ExpressionNode, variables: []bool, variable_count: usize, current_variable: usize) !void {
+    if (current_variable >= variable_count) {
+        return;
+    }
+
+    variables[current_variable] = false;
+    try evaluateRecursively(tree, variables, variable_count, current_variable + 1);
+
+    const result = evaluate(tree, variables);
+    printTruthTableRow(variables, result);
+
+    variables[current_variable] = true;
+    try evaluateRecursively(tree, variables, variable_count, current_variable + 1);
+
+    if (current_variable == 0) {
+        const result_all_true = evaluate(tree, variables);
+        printTruthTableRow(variables, result_all_true);
+    }
+}
+
+fn evaluate(tree: *const ExpressionNode, variables: []const bool) bool {
+    switch (tree.*) {
+        .variable => |id| return variables[id],
+        .unary_expression => |unary| switch (unary.type) {
+            .Negation => return !evaluate(unary.operand, variables),
+        },
+        .binary_expression => |binary| switch (binary.type) {
+            .And => return evaluate(binary.left, variables) and evaluate(binary.right, variables),
+            .Or => return evaluate(binary.left, variables) or evaluate(binary.right, variables),
+            .Implication => return !evaluate(binary.left, variables) or evaluate(binary.right, variables),
+            .Equivalance => return evaluate(binary.left, variables) == evaluate(binary.right, variables),
         },
     }
 }
 
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+fn printTruthTableRow(variables: []bool, result: bool) void {
+    var num: u8 = 0;
+    for (variables) |variable| {
+        num = if (variable) 1 else 0;
+        print("{} ", .{num});
+    }
+    num = if (result) 1 else 0;
+    print("= {}\n", .{num});
+}
 
-    const allocator = arena.allocator();
-
+fn readLine(allocator: mem.Allocator) ![]u8 {
     const stdin = io.getStdIn().reader();
-    const stdout = io.getStdOut().writer();
-
-    print("> ", .{});
-    const input = try stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
-
-    var tokens = try lex(input, allocator);
-    const tokens_slice = try tokens.toOwnedSlice();
-    defer allocator.free(tokens_slice);
-    printList(tokens_slice);
-
-    var map = std.AutoHashMap(u8, usize).init(allocator);
-    defer map.deinit();
-
-    const tree = try parse(tokens_slice, &map);
-
-    const variable_values: [2]bool = .{ true, false };
-    const value = evaluate(&tree.?, &variable_values);
-
-    try stdout.print("Result = {}\n", .{value});
-}
-
-fn printList(collection: anytype) void {
-    for (collection) |item| {
-        print("{}\n", .{item});
-    }
+    var input = std.ArrayList(u8).init(allocator);
+    try stdin.streamUntilDelimiter(input.writer(), '\n', null);
+    return try input.toOwnedSlice();
 }
