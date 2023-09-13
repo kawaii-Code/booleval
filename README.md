@@ -22,6 +22,10 @@ homework and also as an introduction to Zig.
 1 1 1 = 0
 ```
 
+## Quickstart
+
+`zig build run`
+
 ## Todo
 
 This program was supposed to do quine's method, but for
