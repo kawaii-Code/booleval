@@ -299,10 +299,10 @@ fn printTruthTableRow(variables: *AutoArrayHashMap(u8, bool), result: bool) void
     var num: u8 = 0;
     for (variables.keys()) |variable| {
         num = if (variables.get(variable).?) 1 else 0;
-        print("{c} = {}, ", .{variable, num});
+        print("{c} = {} ", .{variable, num});
     }
     num = if (result) 1 else 0;
-    print("= {}\n", .{num});
+    print("| {}\n", .{num});
 }
 
 fn readLine(allocator: Allocator) ![]u8 {
