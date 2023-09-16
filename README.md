@@ -12,14 +12,26 @@ homework and also as an introduction to Zig.
 
 ```console
 > a & !(b -> c)
-0 0 0 = 0
-0 0 1 = 0
-0 1 0 = 0
-0 1 1 = 0
-1 0 0 = 0
-1 0 1 = 0
-1 1 0 = 1
-1 1 1 = 0
+a = 0 b = 0 c = 0 | 0
+a = 1 b = 0 c = 0 | 0
+a = 0 b = 1 c = 0 | 0
+a = 1 b = 1 c = 0 | 1
+a = 0 b = 0 c = 1 | 0
+a = 1 b = 0 c = 1 | 0
+a = 0 b = 1 c = 1 | 0
+a = 1 b = 1 c = 1 | 0
+```
+
+```console
+> (a & b), b |- c
+a = 0 b = 0 c = 0 | 1
+a = 1 b = 0 c = 0 | 1
+a = 0 b = 1 c = 0 | 1
+a = 1 b = 1 c = 0 | 0
+a = 0 b = 0 c = 1 | 1
+a = 1 b = 0 c = 1 | 1
+a = 0 b = 1 c = 1 | 1
+a = 1 b = 1 c = 1 | 1
 ```
 
 ## Quickstart
@@ -30,8 +42,8 @@ homework and also as an introduction to Zig.
 
 This program was supposed to do quine's method, but for
 now it only prints the truth table. Fix that. In order to do that:
-- Support |- symbol
-- Remember variable names and print them later
-- Pretty print the truth table, stop at 0
-
-Support for 0 and 1 constants
+- [X] Support |- symbol
+- [X] Remember variable names and print them later
+- [ ] Sort variables somehow (also sort lexicographically)
+- [ ] Pretty print the truth table, stop at 0
+- [ ] Support for 0 and 1 constants
