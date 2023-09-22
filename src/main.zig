@@ -141,7 +141,7 @@ fn parse(allocator: Allocator, tokens: []const Token, variables: *AutoArrayHashM
             return node;
         },
         .bang => {
-            const right_tokens = tokens[position + 1..];
+            const right_tokens = tokens[position + 1 ..];
             const operand = try parse(allocator, right_tokens, variables);
 
             const node = try allocator.create(ExpressionNode);
@@ -254,7 +254,7 @@ fn hasLessPrecedence(token: Token, maybe_other: ?Token) bool {
         .tee => return other != Token.comma,
         .arrow, .tilde => return other != Token.tee and other != Token.comma,
         .pipe, .cap => return other == Token.pipe or other == Token.cap or
-                              other == Token.ampersand or other == Token.bang,
+            other == Token.ampersand or other == Token.bang,
         .ampersand => return other == Token.ampersand or other == Token.bang,
         .bang => return other == Token.bang,
         else => unreachable,
@@ -280,26 +280,26 @@ fn printTruthTable(tree: *const ExpressionNode, variables: *AutoArrayHashMap(u8,
 }
 
 fn evaluate(tree: *const ExpressionNode, variables: *AutoArrayHashMap(u8, bool)) bool {
-    switch (tree.*) {
-        .variable => |char| return variables.get(char).?,
+    return switch (tree.*) {
+        .variable => |char| variables.get(char).?,
         .unary_expression => |unary| switch (unary.type) {
-            .Negation => return !evaluate(unary.operand, variables),
+            .Negation => !evaluate(unary.operand, variables),
         },
         .binary_expression => |binary| switch (binary.type) {
-            .And => return evaluate(binary.left, variables) and evaluate(binary.right, variables),
-            .Or => return evaluate(binary.left, variables) or evaluate(binary.right, variables),
-            .Xor => return evaluate(binary.left, variables) != evaluate(binary.right, variables),
-            .Implication => return !evaluate(binary.left, variables) or evaluate(binary.right, variables),
-            .Equivalance => return evaluate(binary.left, variables) == evaluate(binary.right, variables),
+            .And => evaluate(binary.left, variables) and evaluate(binary.right, variables),
+            .Or => evaluate(binary.left, variables) or evaluate(binary.right, variables),
+            .Xor => evaluate(binary.left, variables) != evaluate(binary.right, variables),
+            .Implication => !evaluate(binary.left, variables) or evaluate(binary.right, variables),
+            .Equivalance => evaluate(binary.left, variables) == evaluate(binary.right, variables),
         },
-    }
+    };
 }
 
 fn printTruthTableRow(variables: *AutoArrayHashMap(u8, bool), result: bool) void {
     var num: u8 = 0;
     for (variables.keys()) |variable| {
         num = if (variables.get(variable).?) 1 else 0;
-        print("{c} = {} ", .{variable, num});
+        print("{c} = {} ", .{ variable, num });
     }
     num = if (result) 1 else 0;
     print("| {}\n", .{num});
